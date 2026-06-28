@@ -215,6 +215,8 @@ def clean_and_calc(client):
 
     # --- 4c. 写入 fact_price_clean ---
     client.command("TRUNCATE TABLE fact_price_clean")
+    # ⚠️ price_date 必须转为 datetime.date，CK Date 列不接受字符串
+    merged["price_date"] = pd.to_datetime(merged["price_date"]).dt.date
     cols = ["product_id", "category_id", "price_date", "price", "sales_volume"]
     insert_data = merged[cols].values.tolist()
     client.insert("fact_price_clean", insert_data, column_names=cols)
@@ -224,19 +226,40 @@ def clean_and_calc(client):
     # SUM(price * sales_volume) / SUM(sales_volume)
     client.command("DROP TABLE IF EXISTS daily_category_price_index")
     client.command("""
-        CREATE TABLE daily_category_price_index
-        ENGINE = MergeTree() PARTITION BY toYYYYMM(price_date)
-        ORDER BY (category_id, price_date) AS
+        CREATE TABLE daily_category_price_index (
+            category_id Int32,
+            category_name String,
+            price_date Date,
+            weighted_avg_price Float64,
+            total_sales Int64,
+            price_index Float64
+        ) ENGINE = MergeTree() PARTITION BY toYYYYMM(price_date)
+        ORDER BY (category_id, price_date)
+    """)
+    client.command("""
+        INSERT INTO daily_category_price_index
         SELECT
             cat.category_id,
             cat.category_name,
             f.price_date,
             SUM(f.price * f.sales_volume) / SUM(f.sales_volume) AS weighted_avg_price,
-            SUM(f.sales_volume) AS total_sales
+            SUM(f.sales_volume) AS total_sales,
+            round(
+                (SUM(f.price * f.sales_volume) / SUM(f.sales_volume))
+                / any(base.base_price) * 100,
+                2
+            ) AS price_index
         FROM fact_price_clean f
         LEFT JOIN dim_category cat ON f.category_id = cat.category_id
+        LEFT JOIN (
+            SELECT
+                category_id,
+                SUM(price * sales_volume) / SUM(sales_volume) AS base_price
+            FROM fact_price_clean
+            WHERE price_date = '2026-01-01'
+            GROUP BY category_id
+        ) base ON f.category_id = base.category_id
         GROUP BY cat.category_id, cat.category_name, f.price_date
-        ORDER BY category_id, price_date
     """)
     print("✅ 加权价格指数计算完成")
 
@@ -256,10 +279,11 @@ def export_results(client):
     print(f"  日期范围: {df_index['price_date'].min()} ~ {df_index['price_date'].max()}")
 
     # 统计摘要
-    print(f"\n  各分类加权均价均值:")
-    summary = df_index.groupby("category_name")["weighted_avg_price"].mean().sort_values(ascending=False)
-    for cat, val in summary.items():
-        print(f"    {cat}: ¥{val:.2f}")
+    print(f"\n  各分类加权均价均值 & 价格指数均值（基期 2026-01-01 = 100）:")
+    summary_price = df_index.groupby("category_name")["weighted_avg_price"].mean().sort_values(ascending=False)
+    summary_index = df_index.groupby("category_name")["price_index"].mean().sort_values(ascending=False)
+    for cat in summary_price.index:
+        print(f"    {cat}: ¥{summary_price[cat]:.2f} | 指数均值: {summary_index[cat]:.2f}")
 
     output_path = os.path.join(PROJECT_ROOT, "price_index_result.csv")
     df_index.to_csv(output_path, index=False, encoding="utf-8")

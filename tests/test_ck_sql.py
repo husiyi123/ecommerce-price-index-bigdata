@@ -324,8 +324,8 @@ def test_clickhouse_connectivity():
 # ============================================================
 def test_end_to_end_price_index():
     """
-    端到端模拟：从清洗 → JOIN → 加权聚合 的完整 SQL 逻辑。
-    对齐 ck_price_calc.py 的完整数据流。
+    端到端模拟：从清洗 → JOIN → 加权聚合 → 价格指数计算 的完整 SQL 逻辑。
+    对齐 ck_price_calc.py 的完整数据流，包含 price_index = (当日加权均价 / 基期加权均价) × 100。
     """
     # 模拟三表
     cat_df = pd.DataFrame({
@@ -369,4 +369,37 @@ def test_end_to_end_price_index():
     assert len(row) == 1
     assert row["weighted_avg_price"].values[0] == pytest.approx(16.666666, rel=1e-4)
 
+    # Step 4: 计算价格指数（基期 2026-01-01 = 100）
+    # 基期加权均价
+    base_prices = index_df[index_df["price_date"] == "2026-01-01"].set_index("category_id")["weighted_avg_price"]
+    index_df["price_index"] = index_df.apply(
+        lambda r: round(r["weighted_avg_price"] / base_prices[r["category_id"]] * 100, 2),
+        axis=1
+    )
+
+    # 验证基期日的 price_index == 100.00
+    base_rows = index_df[index_df["price_date"] == "2026-01-01"]
+    for _, base_row in base_rows.iterrows():
+        assert base_row["price_index"] == 100.00, \
+            f"分类 {base_row['category_name']} 基期日 price_index 应为 100.00，实际 {base_row['price_index']}"
+
+    # 验证: 分类 1, 2026-01-02 的 price_index
+    # 分类 1 基期 = 16.67, 2026-01-02: product_id=1(12*6=72)/6 = 12.0
+    # price_index = 12.0 / 16.6667 * 100 = 72.0
+    row_1_0102 = index_df[(index_df["category_id"] == 1) & (index_df["price_date"] == "2026-01-02")]
+    assert len(row_1_0102) == 1
+    assert row_1_0102["price_index"].values[0] == pytest.approx(72.00, rel=1e-2)
+
+    # 验证: 分类 2, 2026-01-01（基期日）
+    row_2_0101 = index_df[(index_df["category_id"] == 2) & (index_df["price_date"] == "2026-01-01")]
+    assert row_2_0101["price_index"].values[0] == 100.00
+
+    # 验证: 分类 2, 2026-01-02
+    # 分类 2 基期 (2026-01-01): product_id=4, price=40*8/8 = 40.0
+    # 分类 2, 2026-01-02: product_id=3(30*3=90) + product_id=4(44*7=308) = 398/10 = 39.8
+    # price_index = 39.8 / 40.0 * 100 = 99.5
+    row_2_0102 = index_df[(index_df["category_id"] == 2) & (index_df["price_date"] == "2026-01-02")]
+    assert row_2_0102["price_index"].values[0] == pytest.approx(99.5, rel=1e-2)
+
     print(f"  端到端结果: {len(index_df)} 条指数记录, {index_df['category_name'].nunique()} 个分类")
+    print(f"  价格指数验证通过: 基期日 = 100.00 ✓")

@@ -28,20 +28,28 @@ colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e3
 
 for idx, cate in enumerate(category_list):
     sub_df = df[df["category_name"] == cate].sort_values("price_date")
-    ax.plot(sub_df["price_date"], sub_df["weighted_avg_price"], label=cate, color=colors[idx], linewidth=1.2)
+    ax.plot(sub_df["price_date"], sub_df["price_index"], label=cate, color=colors[idx], linewidth=1.2)
 
 # 图表美化
-ax.set_title("电商日度分类加权价格指数趋势图（高频CPI监测）", fontsize=16, pad=15)
+ax.set_title("电商日度分类价格指数趋势图（基期 2026-01-01 = 100）", fontsize=16, pad=15)
 ax.set_xlabel("日期", fontsize=12)
-ax.set_ylabel("销量加权平均价格（指数基准）", fontsize=12)
+ax.set_ylabel("价格指数（基期 2026-01-01 = 100）", fontsize=12)
 ax.xaxis.set_major_locator(mdates.MonthLocator())
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
 plt.xticks(rotation=30)
 ax.legend(loc="upper right")
 ax.grid(alpha=0.3)
 
+# 添加脚注
+fig.text(
+    0.5, 0.01,
+    "基期：2026年1月1日 | 权重：当日商品销量加权 | "
+    "算法：分类销量加权均价指数 = (当日加权均价 ÷ 基期加权均价) × 100",
+    ha="center", fontsize=8, fontstyle="italic", color="gray"
+)
+
 # 保存图片
 plt.tight_layout()
-plt.savefig("./cpi_price_trend.png", dpi=300)
+plt.savefig("./cpi_price_trend.png", dpi=300, bbox_inches="tight")
 plt.show()
 print("✅ 趋势图已保存 cpi_price_trend.png")
