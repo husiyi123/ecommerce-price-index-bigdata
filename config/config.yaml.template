@@ -1,0 +1,43 @@
+# ============================================================
+# 项目配置文件模板（对应指导书密钥管理要求）
+# 使用说明: 复制为 config.yaml，替换占位符后使用
+# 警告: config.yaml 已被 .gitignore 忽略，严禁提交！
+# ============================================================
+
+# -------------------- 阿里云 OSS 对象存储 --------------------
+oss:
+  endpoint: "https://oss-cn-hangzhou.aliyuncs.com"
+  access_key_id: "your_access_key_id"
+  access_key_secret: "your_access_key_secret"
+  bucket_name: "your_bucket_name"
+
+# -------------------- ClickHouse 数据仓库 --------------------
+clickhouse:
+  host: "localhost"
+  port: 9000
+  user: "default"
+  password: "default"
+  database: "ecommerce"
+
+# -------------------- 数据生成参数 --------------------
+data_generation:
+  total_size_mb: 100          # 目标数据集大小（MB）
+  output_dir: "data/raw"      # 原始数据输出路径
+  products_count: 5000        # 商品 SKU 数量
+  date_range_days: 365        # 时间跨度（天）
+  random_seed: 42             # 随机种子（保证可复现性）
+
+# -------------------- 价格指数计算参数 --------------------
+price_index:
+  method: "laspeyres"         # 指数计算方法: laspeyres / paasche / fisher
+  base_date: "2025-01-01"     # 基期日期
+  filter_invalid: true        # 是否过滤无效数据
+  price_lower_bound: 0.01     # 价格下界（低于此值视为脏数据）
+  price_upper_bound: 999999   # 价格上界（高于此值视为脏数据）
+
+# -------------------- 可视化参数 --------------------
+visualization:
+  output_format: "png"        # 输出格式: png / svg / pdf
+  dpi: 150                    # 图片分辨率
+  figure_size: [16, 9]        # 画布尺寸（英寸）
+  title: "电商价格指数 (CPI) 日度趋势图"

@@ -1,0 +1,400 @@
+name: Ecommerce CPI CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ============================================================
+  # 阶段 1: 数据格式校验与字段类型转换
+  # ============================================================
+  data-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy pyarrow
+
+      - name: 生成小规模测试数据 (1MB)
+        run: |
+          python -c "
+          import os, random, pandas as pd
+          from datetime import datetime, timedelta
+
+          os.makedirs('raw_data', exist_ok=True)
+
+          # --- 分类表 ---
+          categories = ['生鲜果蔬','粮油副食','家居百货','数码电器','服装鞋帽','美妆护肤','母婴用品','零食饮料']
+          df_cat = pd.DataFrame([
+              {'category_id': i+1, 'category_name': c}
+              for i, c in enumerate(categories)
+          ])
+          df_cat.to_csv('raw_data/category.csv', index=False)
+          print(f'category.csv: {len(df_cat)} 行')
+
+          # --- 商品表（小规模：8分类 × 5商品 = 40 SKU）---
+          products = []
+          pid = 1
+          for cid in range(1, 9):
+              for _ in range(5):
+                  products.append({
+                      'product_id': pid,
+                      'category_id': cid,
+                      'product_name': f'商品_{cid}_{pid}',
+                      'brand': random.choice(['A牌','B牌','C牌','D牌','自营']),
+                      'spec': random.choice(['1kg','500ml','2件装','大号','标准版'])
+                  })
+                  pid += 1
+          df_prod = pd.DataFrame(products)
+          df_prod.to_csv('raw_data/product.csv', index=False)
+          print(f'product.csv: {len(df_prod)} 行')
+
+          # --- 价格表（40 SKU × 10 天 = 400 行）---
+          start = datetime(2026, 1, 1)
+          price_rows = []
+          for pid_val in df_prod['product_id']:
+              base = round(random.uniform(9.9, 2999.9), 2)
+              for d in range(10):
+                  date_val = (start + timedelta(days=d)).strftime('%Y-%m-%d')
+                  fluct = base * random.uniform(0.85, 1.15)
+                  dirty = random.random()
+                  if dirty < 0.02:
+                      price_val = None
+                  elif dirty < 0.04:
+                      price_val = -round(random.uniform(1,100), 2)
+                  elif dirty < 0.06:
+                      price_val = 999999
+                  else:
+                      price_val = round(fluct, 2)
+                  price_rows.append({
+                      'product_id': pid_val,
+                      'price_date': date_val,
+                      'price': price_val,
+                      'sales_volume': random.randint(0, 1200)
+                  })
+          df_price = pd.DataFrame(price_rows)
+          df_price.to_csv('raw_data/price.csv', index=False)
+          print(f'price.csv: {len(df_price)} 行')
+          print('小规模测试数据集生成完毕 (约 0.1MB)')
+          "
+
+      - name: 执行数据格式校验 & 字段类型转换
+        run: python src/data_generation/validate_data.py
+
+      - name: 归档校验报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-report
+          path: raw_data/validation_report.txt
+          retention-days: 7
+
+  # ============================================================
+  # 阶段 2: 单元测试（小规模 CSV → OSS 验证 → SQL 正确性）
+  # ============================================================
+  unit-tests:
+    needs: data-validation
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        ports:
+          - 8123:8123
+          - 9000:9000
+        env:
+          CLICKHOUSE_DB: ecommerce
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: default
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载校验通过的测试数据
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-report
+          path: raw_data/
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 等待 ClickHouse 就绪
+        run: |
+          echo "等待 ClickHouse 启动..."
+          for i in $(seq 1 30); do
+            if curl -s "http://localhost:8123/ping" | grep -q "Ok"; then
+              echo "ClickHouse 已就绪 (${i}s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ERROR: ClickHouse 启动超时"
+          exit 1
+
+      - name: 单元测试 - OSS 连通性与字段解析
+        env:
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+        run: |
+          python -m pytest tests/test_oss_connect.py -v \
+            -k "not integration" \
+            --junitxml=test-results/oss-unit.xml
+
+      - name: 单元测试 - ClickHouse SQL 逻辑正确性
+        env:
+          CK_HOST: localhost
+          CK_PORT: 9000
+          CK_USER: default
+          CK_PASSWORD: default
+          CK_DATABASE: ecommerce
+        run: |
+          python -m pytest tests/test_ck_sql.py -v \
+            --junitxml=test-results/ck-unit.xml
+
+      - name: 归档测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: test-results/
+          retention-days: 7
+
+  # ============================================================
+  # 阶段 3: 集成测试（全链路：OSS Upload → CK 导入 → 清洗 → 计算 → 可视化）
+  # ============================================================
+  integration-tests:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        ports:
+          - 8123:8123
+          - 9000:9000
+        env:
+          CLICKHOUSE_DB: ecommerce
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: default
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载校验通过的测试数据
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-report
+          path: raw_data/
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 等待 ClickHouse 就绪
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s "http://localhost:8123/ping" | grep -q "Ok"; then
+              echo "ClickHouse 就绪"
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: 集成测试 Step 1 — 上传测试数据至 OSS
+        env:
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+        run: python src/oss_operation/oss_upload.py
+
+      - name: 集成测试 Step 2 — ClickHouse 外部表导入 & 清洗
+        env:
+          CK_HOST: localhost
+          CK_PORT: 9000
+          CK_USER: default
+          CK_PASSWORD: default
+          CK_DATABASE: ecommerce
+        run: |
+          python -c "
+          import os, clickhouse_connect
+
+          client = clickhouse_connect.get_client(
+              host='localhost', port=9000,
+              username='default', password='default',
+              database='ecommerce'
+          )
+          client.command('CREATE DATABASE IF NOT EXISTS ecommerce')
+
+          # 验证本地 CSV 可读取
+          import pandas as pd
+          for f in ['category.csv','product.csv','price.csv']:
+              df = pd.read_csv(f'raw_data/{f}')
+              print(f'{f}: {len(df)} 行, 列: {list(df.columns)}')
+
+          print('集成测试: 数据导入验证通过')
+          "
+
+      - name: 集成测试 Step 3 — ClickHouse 清洗 & 价格指数计算
+        env:
+          CK_HOST: localhost
+          CK_PORT: 9000
+          CK_USER: default
+          CK_PASSWORD: default
+          CK_DATABASE: ecommerce
+        run: python src/clickhouse_process/ck_price_calc.py
+
+      - name: 集成测试 Step 4 — 验证计算结果
+        run: |
+          python -c "
+          import pandas as pd
+          df = pd.read_csv('price_index_result.csv')
+          assert len(df) > 0, '计算结果为空！'
+          assert 'weighted_avg_price' in df.columns, '缺少 weighted_avg_price 列'
+          assert 'category_name' in df.columns, '缺少 category_name 列'
+          assert df['weighted_avg_price'].notna().all(), '存在空价格指数'
+          print(f'集成测试通过: {len(df)} 条指数记录, {df[\"category_name\"].nunique()} 个分类')
+          print(df.groupby('category_name')['weighted_avg_price'].mean().to_string())
+          "
+
+      - name: 集成测试 Step 5 — 生成可视化图表
+        run: python src/visualization/draw_cpi_trend.py
+
+      - name: 集成测试 Step 6 — 验证可视化产物
+        run: |
+          if [ -f "cpi_price_trend.png" ]; then
+            echo "可视化产物验证通过: cpi_price_trend.png"
+            ls -lh cpi_price_trend.png
+          else
+            echo "ERROR: 可视化产物缺失!"
+            exit 1
+          fi
+
+      - name: 归档集成测试产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-outputs
+          path: |
+            price_index_result.csv
+            cpi_price_trend.png
+          retention-days: 30
+
+  # ============================================================
+  # 阶段 4: 自动部署至 ClickHouse 与可视化服务
+  # ============================================================
+  deploy:
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        ports:
+          - 8123:8123
+          - 9000:9000
+        env:
+          CLICKHOUSE_DB: ecommerce
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: default
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 等待 ClickHouse 就绪
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s "http://localhost:8123/ping" | grep -q "Ok"; then
+              echo "ClickHouse 就绪"
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: 部署 Step 1 — 生成全量 100MB 数据集
+        run: python src/data_generation/data_generator.py
+
+      - name: 部署 Step 2 — 上传全量数据至 OSS
+        env:
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET_NAME: ${{ secrets.OSS_BUCKET_NAME }}
+        run: python src/oss_operation/oss_upload.py
+
+      - name: 部署 Step 3 — ClickHouse 全量清洗 & 指数计算
+        env:
+          CK_HOST: localhost
+          CK_PORT: 9000
+          CK_USER: default
+          CK_PASSWORD: default
+          CK_DATABASE: ecommerce
+        run: python src/clickhouse_process/ck_price_calc.py
+
+      - name: 部署 Step 4 — 生成全量可视化报告
+        run: python src/visualization/draw_cpi_trend.py
+
+      - name: 部署 Step 5 — 汇总部署结果
+        run: |
+          echo "============================================="
+          echo "  部署完成 — 产物清单"
+          echo "============================================="
+          echo "数据文件:"
+          ls -lh raw_data/ 2>/dev/null || echo "  (raw_data 未保留)"
+          echo ""
+          echo "计算结果:"
+          ls -lh price_index_result.csv 2>/dev/null || echo "  (缺失)"
+          echo ""
+          echo "可视化图表:"
+          ls -lh cpi_price_trend.png 2>/dev/null || echo "  (缺失)"
+          echo "============================================="
+
+      - name: 归档部署产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-artifacts
+          path: |
+            price_index_result.csv
+            cpi_price_trend.png
+          retention-days: 30

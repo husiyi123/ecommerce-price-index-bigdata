@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# 环境变量 & 密钥（严禁提交）
+.env
+config/config.yaml
+
+# 数据文件（大文件默认不提交）
+raw_data/
+data/
+price_index_result.csv
+cpi_price_trend.png
+*.parquet
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Conda / venv
+venv/
+.venv/
+env/
+
+# 测试覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 日志
+*.log
