@@ -1,0 +1,40 @@
+[project]
+name = "ecommerce-price-index-bigdata"
+version = "1.0.0"
+description = "电商价格指数大数据分析系统"
+requires-python = ">=3.10"
+
+# ============================================================
+# pytest 配置
+# ============================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: 标记为集成测试（需要真实 OSS/CK 连接）",
+]
+addopts = "-v --tb=short --strict-markers"
+pythonpath = ["."]
+
+# ============================================================
+# coverage 配置
+# ============================================================
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "tests/*",
+    ".venv/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+# 覆盖率阈值：低于 80% 视为不通过
+fail_under = 80
+show_missing = true
+skip_covered = false
+precision = 1
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

@@ -1,0 +1,4 @@
+product_id,category_id,product_name,brand,spec
+10001,1,测试商品A,A牌,1kg
+10002,2,测试商品B,B牌,500ml
+10003,3,测试商品C,自营,标准版

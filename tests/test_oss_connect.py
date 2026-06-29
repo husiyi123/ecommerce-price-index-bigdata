@@ -77,8 +77,10 @@ def test_category_csv_field_parsing():
     expected_cols = {"category_id", "category_name"}
     actual_cols = set(df.columns)
     assert expected_cols == actual_cols, f"字段不匹配: 期望 {expected_cols}, 实际 {actual_cols}"
-    assert df["category_id"].dtype in ["int64", "int32"], "category_id 应为整型"
-    assert df["category_name"].dtype == "object", "category_name 应为字符串"
+    assert pd.api.types.is_integer_dtype(df["category_id"]), \
+        f"category_id 应为整型，实际 {df['category_id'].dtype}"
+    assert pd.api.types.is_string_dtype(df["category_name"]), \
+        f"category_name 应为字符串，实际 {df['category_name'].dtype}"
 
 
 # ============================================================
@@ -106,8 +108,10 @@ def test_product_csv_field_parsing():
     actual_cols = set(df.columns)
     assert expected_cols == actual_cols, f"字段不匹配: 期望 {expected_cols}, 实际 {actual_cols}"
 
-    assert df["product_id"].dtype in ["int64", "int32"], "product_id 应为整型"
-    assert df["category_id"].dtype in ["int64", "int32"], "category_id 应为整型"
+    assert pd.api.types.is_integer_dtype(df["product_id"]), \
+        f"product_id 应为整型，实际 {df['product_id'].dtype}"
+    assert pd.api.types.is_integer_dtype(df["category_id"]), \
+        f"category_id 应为整型，实际 {df['category_id'].dtype}"
 
 
 # ============================================================
@@ -135,7 +139,8 @@ def test_price_csv_field_parsing():
     assert expected_cols == actual_cols, f"字段不匹配: 期望 {expected_cols}, 实际 {actual_cols}"
 
     # price 应为数值型
-    assert df["price"].dtype in ["float64", "int64"], f"price 类型异常: {df['price'].dtype}"
+    assert pd.api.types.is_numeric_dtype(df["price"]), \
+        f"price 类型异常: {df['price'].dtype}"
 
 
 # ============================================================
@@ -243,3 +248,53 @@ def test_oss_bucket_connectivity():
         pytest.skip("OSS 凭据无权限访问目标 Bucket")
     except Exception as e:
         pytest.fail(f"OSS 连接失败: {e}")
+
+
+# ============================================================
+# 测试 10: src/oss_upload 模块函数导入与路径映射验证
+# ============================================================
+def test_oss_upload_module_functions():
+    """
+    验证 oss_upload.py 中的上传路径映射与常量定义。
+    由于模块级代码会初始化 oss2.Bucket，使用 mock 隔离。
+    """
+    import sys
+    import os
+    _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+
+    from unittest.mock import patch, MagicMock
+    import oss2 as _oss2_module
+
+    with patch.object(_oss2_module, "Auth") as mock_auth, \
+         patch.object(_oss2_module, "Bucket") as mock_bucket, \
+         patch.dict(os.environ, {
+             "OSS_ENDPOINT": "https://oss-cn-test.aliyuncs.com",
+             "OSS_ACCESS_KEY_ID": "test_key_id",
+             "OSS_ACCESS_KEY_SECRET": "test_key_secret",
+             "OSS_BUCKET_NAME": "test-bucket-name",
+         }):
+        mock_auth.return_value = MagicMock()
+        mock_bucket.return_value = MagicMock()
+
+        # 清除已缓存的模块以强制重新导入
+        if "src.oss_operation.oss_upload" in sys.modules:
+            del sys.modules["src.oss_operation.oss_upload"]
+        if "src.oss_operation" in sys.modules:
+            del sys.modules["src.oss_operation"]
+
+        from src.oss_operation import oss_upload
+
+        # 验证核心函数存在
+        assert hasattr(oss_upload, "upload_file"), "缺少 upload_file 函数"
+
+        # 验证路径映射常量
+        upload_mapping = oss_upload.upload_mapping
+        assert len(upload_mapping) == 3, f"应有 3 个文件映射，实际 {len(upload_mapping)}"
+        for local, remote in upload_mapping:
+            assert local.endswith(".csv"), f"本地路径应以 .csv 结尾: {local}"
+            assert remote.startswith("raw/"), f"远程路径应以 raw/ 开头: {remote}"
+            assert remote.endswith(".csv"), f"远程文件应以 .csv 结尾: {remote}"
+
+        print("  ✓ oss_upload 模块函数验证通过")

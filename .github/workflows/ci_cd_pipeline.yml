@@ -162,6 +162,9 @@ jobs:
         run: |
           python -m pytest tests/test_oss_connect.py -v \
             -k "not integration" \
+            --cov=src --cov-fail-under=80 \
+            --cov-report=term-missing \
+            --cov-report=xml:test-results/coverage-oss.xml \
             --junitxml=test-results/oss-unit.xml
 
       - name: 单元测试 - ClickHouse SQL 逻辑正确性
@@ -173,6 +176,9 @@ jobs:
           CK_DATABASE: ecommerce
         run: |
           python -m pytest tests/test_ck_sql.py -v \
+            --cov=src --cov-fail-under=80 \
+            --cov-report=term-missing \
+            --cov-report=xml:test-results/coverage-ck.xml \
             --junitxml=test-results/ck-unit.xml
 
       - name: 归档测试报告
